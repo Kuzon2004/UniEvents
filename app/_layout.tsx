@@ -28,7 +28,7 @@ export default function RootLayout() {
           name="modal"
           options={{ presentation: "modal", title: "Modal" }}
         />
-      </Stack> 
+      </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>
   );
