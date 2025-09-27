@@ -41,3 +41,16 @@ app-example
 # generated native folders
 /ios
 /android
+
+# Local properties file with SDK path
+local.properties
+
+# Google Services configuration files
+google-services.json
+GoogleService-Info.plist
+
+# Firebase config
+firebaseConfig.js
+
+# Ignore all zip files
+*.zip

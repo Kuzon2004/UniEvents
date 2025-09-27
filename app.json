@@ -20,7 +20,13 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.UniEvents"
+      "package": "com.anonymous.UniEvents",
+      "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyC9dOPHWyWnnVlUvM4eeVFTQHO5p2vkwP0"
+        }
+      }
     },
     "web": {
       "output": "static",
