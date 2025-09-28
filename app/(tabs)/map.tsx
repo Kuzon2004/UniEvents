@@ -1,19 +1,29 @@
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
-import { addDoc, collection, doc, GeoPoint, getDoc, getDocs } from "firebase/firestore";
+import {
+  collection,
+  deleteDoc,
+  doc,
+  GeoPoint,
+  getDoc,
+  getDocs,
+  Timestamp
+} from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Platform,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import MapView, { Marker, PROVIDER_GOOGLE, Region } from "react-native-maps";
+import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
 import { auth, db } from "../../firebaseConfig";
@@ -23,297 +33,307 @@ const Colors = {
   accentNavy: "#0D2A4C",
   background: "#FFFFFF",
   darkText: "#212529",
+  subtleText: "#5A5A5A",
   border: "#DEE2E6",
 };
 
-// --- Anna University Bounds (from your original code) ---
-const ANNA_UNIVERSITY_BOUNDS = {
-  minLat: 13.007222,
-  maxLat: 13.015944,
-  minLon: 80.230278,
-  maxLon: 80.240351,
-};
+interface Event {
+  id: string;
+  eventName: string;
+  description: string;
+  category: string;
+  dateTime?: Timestamp;
+  venueDetails: { building: string; floor: string; room: string };
+  organizerInfo: { name: string; phoneNumber: string };
+  imageUrls: string[];
+  location?: GeoPoint;
+  createdBy?: string;
+}
 
 const MapScreen = () => {
-   const initialRegion = {
-    latitude: 13.0136,
-    longitude: 80.2345,
-    latitudeDelta: 0.012,
-    longitudeDelta: 0.012,
-  };
-  
   const router = useRouter();
-  const [events, setEvents] = useState<any[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [loading, setLoading] = useState(true);
   const [userRole, setUserRole] = useState<string | null>(null);
-  const [addEventMode, setAddEventMode] = useState(false);
-  const [currentRegion, setCurrentRegion] = useState(initialRegion);
+
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
-  const [newEventTitle, setNewEventTitle] = useState("");
-  const [toastVisible, setToastVisible] = useState(false);
-  const [mapPitch, setMapPitch] = useState(0); // 0 is 2D, 45 is 3D
-  const [newEventDescription, setNewEventDescription] = useState("");
-  const [newEventCoordinate, setNewEventCoordinate] = useState<any>(null);
 
+  const [selectingLocation, setSelectingLocation] = useState(false);
+  const [is3D, setIs3D] = useState(false);
   const mapRef = useRef<MapView>(null);
-  const isTogglingView = useRef(false);
 
-const toggleMapView = () => {
-  const newPitch = mapPitch === 0 ? 45 : 0;
-  setMapPitch(newPitch);
-
-  mapRef.current?.animateCamera({
-    pitch: newPitch,
-  }, { duration: 750 });
-};
-
-  const fetchData = async () => {
-    try {
-      const eventsCollection = collection(db, "events");
-      const eventSnapshot = await getDocs(eventsCollection);
-      const eventsList = eventSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setEvents(eventsList);
-
-      const user = auth.currentUser;
-      if (user) {
-        const userDocRef = doc(db, "users", user.uid);
-        const userDoc = await getDoc(userDocRef);
-        if (userDoc.exists()) {
-          setUserRole(userDoc.data().role);
-        }
-      }
-    } catch (error) {
-      console.error("Failed to fetch data:", error);
-      Alert.alert("Error", "Could not load data from the server.");
-    }
-  };
+  const minLat = 13.006;
+  const maxLat = 13.018;
+  const minLng = 80.230;
+  const maxLng = 80.244;
 
   useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const eventsCollection = collection(db, "events");
+        const eventSnapshot = await getDocs(eventsCollection);
+        const eventsList = eventSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+        })) as Event[];
+        setEvents(eventsList);
+
+        const user = auth.currentUser;
+        if (user) {
+          const userDoc = await getDoc(doc(db, "users", user.uid));
+          if (userDoc.exists()) setUserRole(userDoc.data().role);
+        }
+      } catch (error) {
+        console.error("Failed to fetch data:", error);
+        Alert.alert("Error", "Could not load data from the server.");
+      } finally {
+        setLoading(false);
+      }
+    };
     fetchData();
   }, []);
 
-  const handleMapPress = (e: any) => {
-    if (!addEventMode) return;
-    const coordinate = e.nativeEvent.coordinate;
-    setNewEventCoordinate(coordinate);
+  const handleMarkerPress = (event: Event) => {
+    if (selectingLocation) return;
+    setSelectedEvent(event);
     setModalVisible(true);
-    setAddEventMode(false);
-  };
-  
-  const handleFabPress = () => {
-    setAddEventMode(true);
-    Alert.alert("Add Event Mode", "Tap anywhere on the map to place your new event.");
   };
 
-  const handleSaveEvent = async () => {
-    if (!newEventTitle || !newEventCoordinate) {
-      Alert.alert("Error", "Please enter a title for the event.");
-      return;
-    }
-    try {
-      await addDoc(collection(db, "events"), {
-        title: newEventTitle,
-        description: newEventDescription,
-        location: new GeoPoint(newEventCoordinate.latitude, newEventCoordinate.longitude),
-        createdAt: new Date(),
-        organizerId: auth.currentUser?.uid,
-      });
-      setModalVisible(false);
-      setNewEventTitle("");
-      setNewEventDescription("");
-      fetchData();
-    } catch (error) {
-      console.error("Error saving event: ", error);
-      Alert.alert("Error", "Could not save the event.");
+  const handleMapPress = (e: any) => {
+    if (selectingLocation) {
+      const { latitude, longitude } = e.nativeEvent.coordinate;
+      setSelectingLocation(false);
+      router.push(`/(organizer)/createEvent?lat=${latitude}&lng=${longitude}`);
     }
   };
+
+  const handleFabPress = () => setSelectingLocation(true);
 
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      router.replace('/login');
+      router.replace("/login");
     } catch (error) {
       console.error("Sign out error", error);
     }
   };
 
- 
-  
- const handleRegionChangeComplete = (region: Region) => {
-  if (isTogglingView.current) {
-    isTogglingView.current = false;
-    return;
-  }
+  const handleDeleteEvent = async (eventId: string) => {
+    Alert.alert(
+      "Delete Event",
+      "Are you sure you want to delete this event? This action cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await deleteDoc(doc(db, "events", eventId));
+              setEvents(prev => prev.filter(e => e.id !== eventId));
+              setModalVisible(false);
+              Alert.alert("Success", "Event deleted successfully.");
+            } catch (error) {
+              console.error("Error deleting event:", error);
+              Alert.alert("Error", "Could not delete the event.");
+            }
+          },
+        },
+      ]
+    );
+  };
 
-  let needsCorrection = false;
-  if (
-    region.latitude < ANNA_UNIVERSITY_BOUNDS.minLat ||
-    region.latitude > ANNA_UNIVERSITY_BOUNDS.maxLat ||
-    region.longitude < ANNA_UNIVERSITY_BOUNDS.minLon ||
-    region.longitude > ANNA_UNIVERSITY_BOUNDS.maxLon
-  ) {
-    needsCorrection = true;
-  }
+  const toggle3D = () => {
+    const newPitch = is3D ? 0 : 45;
+    setIs3D(prev => !prev);
+    if (mapRef.current) {
+      mapRef.current.animateCamera({ pitch: newPitch }, { duration: 1000 });
+    }
+  };
 
-  if (needsCorrection) {
-    mapRef.current?.animateToRegion(initialRegion, 500);
-    // When correcting, also reset the state to the initial region
-    setCurrentRegion(initialRegion);
-    
-    setToastVisible(true);
-    setTimeout(() => {
-      setToastVisible(false);
-    }, 3000);
-  } else {
-    // If the new position is valid, update our state
-    setCurrentRegion(region);
-  }
-};
+  const handleRegionChangeComplete = (region: any) => {
+    if (region.latitude < minLat || region.latitude > maxLat || region.longitude < minLng || region.longitude > maxLng) {
+      const zoom = Math.log2(360 / region.latitudeDelta);
+      mapRef.current?.animateCamera({
+        center: { latitude: 13.0122935, longitude: 80.2372295 },
+        zoom,
+        pitch: is3D ? 45 : 0,
+        heading: 0,
+      });
+    }
+  };
 
-
-
+  if (loading)
+    return (
+      <View style={styles.loaderContainer}>
+        <ActivityIndicator size="large" color={Colors.primaryRed} />
+      </View>
+    );
 
   return (
     <SafeAreaView style={styles.container}>
-<MapView
+     <MapView
   ref={mapRef}
   provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
   style={styles.map}
+  initialRegion={{
+    latitude: 13.0136,
+    longitude: 80.2345,
+    latitudeDelta: 0.005,
+    longitudeDelta: 0.005,
+  }}
+  minZoomLevel={17.5}
   onPress={handleMapPress}
-  minZoomLevel={15}
   onRegionChangeComplete={handleRegionChangeComplete}
-  pitchEnabled={false}
 >
-       {events.map((event) => {
-  // Add this check to ensure the event has a location before rendering the Marker
-  if (!event.location || event.location.latitude === undefined) {
-   
-  }
-  
-  return (
-    <Marker
-      key={event.id}
-      coordinate={{ latitude: event.location.latitude, longitude: event.location.longitude }}
-      title={event.title}
-      description={event.description}
-    >
-      <Icon name="map-marker" size={40} color={Colors.primaryRed} />
-    </Marker>
-  );
-})}
-      </MapView>
-      
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={modalVisible}
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.centeredView}>
-          <View style={styles.modalView}>
-            <Text style={styles.modalText}>Add New Event</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Event Title"
-              value={newEventTitle}
-              onChangeText={setNewEventTitle}
-            />
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              placeholder="Event Description"
-              value={newEventDescription}
-              onChangeText={setNewEventDescription}
-              multiline
-            />
-            <View style={styles.buttonRow}>
-              <TouchableOpacity
-                style={[styles.button, styles.buttonClose]}
-                onPress={() => setModalVisible(false)}
-              >
-                <Text style={styles.textStyle}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.button, styles.buttonSave]}
-                onPress={handleSaveEvent}
-              >
-                <Text style={styles.textStyle}>Save Event</Text>
-              </TouchableOpacity>
-            </View>
+  {events
+    .filter(event => event.location)
+    .map(event => {
+      let iconName = 'map-marker';
+      let iconColor = Colors.primaryRed;
+      if (event.category === 'Tech') {
+        iconName = 'laptop';
+        iconColor = '#d30000ff';
+      } else if (event.category === 'Food') {
+        iconName = 'food';
+        iconColor = '#dc0000ff';
+      }
+      return (
+        <Marker
+          key={event.id}
+          coordinate={{
+            latitude: event.location!.latitude,
+            longitude: event.location!.longitude,
+          }}
+          anchor={{ x: 0.5, y: 1 }}
+          onPress={() => handleMarkerPress(event)} // opens modal
+        >
+          {/* Marker icon only, no text above */}
+          <Icon name={iconName} size={30} color={iconColor} />
+        </Marker>
+      );
+    })}
+</MapView>
+
+
+
+      {selectingLocation && (
+        <View style={styles.overlay} pointerEvents="none">
+          <View style={styles.overlayContent} pointerEvents="auto">
+            <Text style={styles.overlayText}>Tap on the map to select event location</Text>
+            <TouchableOpacity
+              style={styles.cancelButton}
+              onPress={() => setSelectingLocation(false)}
+            >
+              <Text style={styles.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
           </View>
         </View>
-      </Modal>
-        <TouchableOpacity style={styles.viewToggleButton} onPress={toggleMapView}>
-  <Icon name={mapPitch === 0 ? "cube-outline" : "map-outline"} size={24} color={Colors.accentNavy} />
-</TouchableOpacity>
+      )}
 
-<TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-  {/* ... logout icon ... */}
-</TouchableOpacity>
       <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
         <Icon name="logout" size={24} color={Colors.accentNavy} />
       </TouchableOpacity>
-      
-      {userRole === 'organizer' && (
+
+      {userRole === "organizer" && (
         <TouchableOpacity style={styles.fab} onPress={handleFabPress}>
           <Icon name="plus" size={30} color={Colors.background} />
         </TouchableOpacity>
       )}
 
-      {addEventMode && (
-        <View style={styles.addModeBanner}>
-          <Text style={styles.addModeText}>Add Mode: Tap on the map to place your event.</Text>
+      <TouchableOpacity style={styles.toggle3DBtn} onPress={toggle3D}>
+        <Icon name={is3D ? "earth" : "map"} size={24} color={Colors.accentNavy} />
+      </TouchableOpacity>
+
+      <Modal
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={styles.modalContainer}>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setModalVisible(false)}
+          >
+            <Icon name="close" size={24} color={Colors.accentNavy} />
+          </TouchableOpacity>
+          {selectedEvent && (
+            <ScrollView contentContainerStyle={styles.modalContent}>
+              <Text style={styles.modalTitle}>{selectedEvent.eventName}</Text>
+              <Text style={styles.modalDateTime}>
+                {selectedEvent.dateTime
+                  ? selectedEvent.dateTime.toDate().toLocaleString()
+                  : "Date not specified"}
+              </Text>
+
+              {selectedEvent.imageUrls?.map((url, idx) => (
+                <Image
+                  key={`${selectedEvent.id}-${idx}`}
+                  source={{ uri: url }}
+                  style={styles.eventImage}
+                />
+              ))}
+
+              <Text style={styles.modalDescription}>{selectedEvent.description}</Text>
+
+              <View style={styles.modalInfoBox}>
+                <Text style={styles.modalLabel}>Venue</Text>
+                <Text style={styles.modalText}>Building: {selectedEvent.venueDetails.building}</Text>
+                <Text style={styles.modalText}>Floor: {selectedEvent.venueDetails.floor}</Text>
+                <Text style={styles.modalText}>Room number: {selectedEvent.venueDetails.room}</Text>
+              </View>
+              <View style={styles.modalInfoBox}>
+                <Text style={styles.modalLabel}>Organizer</Text>
+                <Text style={styles.modalText}>Organizer name: {selectedEvent.organizerInfo.name}</Text>
+                <Text style={styles.modalText}>Organizer contact: {selectedEvent.organizerInfo.phoneNumber}</Text>
+              </View>
+
+              {userRole === "organizer" &&
+                selectedEvent.createdBy === auth.currentUser?.uid && (
+                  <TouchableOpacity
+                    style={styles.deleteButton}
+                    onPress={() => handleDeleteEvent(selectedEvent.id)}
+                  >
+                    <Text style={styles.deleteButtonText}>Delete Event</Text>
+                  </TouchableOpacity>
+                )}
+            </ScrollView>
+          )}
         </View>
-      )}
-      {toastVisible && (
-  <View style={styles.toastContainer}>
-    <Text style={styles.toastText}>Events Only in Anna University</Text>
-  </View>
-)}
+      </Modal>
     </SafeAreaView>
   );
 };
 
-
-
-
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
+  calloutContainer: {
+  backgroundColor: "white",
+  paddingHorizontal: 6,
+  paddingVertical: 2,
+  borderRadius: 4,
+  borderWidth: 1,
+  borderColor: Colors.primaryRed,
+},
+calloutText: {
+  fontSize: 12,
+  fontWeight: "bold",
+  color: Colors.darkText,
+},
+
+  loaderContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
   logoutButton: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
+    position: "absolute",
+    top: Platform.OS === "ios" ? 60 : 40,
     right: 20,
     backgroundColor: Colors.background,
     padding: 10,
     borderRadius: 30,
     elevation: 5,
   },
-  viewToggleButton: {
-  position: 'absolute',
-  top: Platform.OS === 'ios' ? 60 : 40,
-  right: 80, // Position it to the left of the logout button
-  backgroundColor: Colors.background,
-  padding: 10,
-  borderRadius: 30,
-  elevation: 5,
-  shadowColor: "#000",
-  shadowOpacity: 0.2,
-  shadowRadius: 5,
-},
-  toastContainer: {
-  position: 'absolute',
-  top: 60,
-  alignSelf: 'center',
-  backgroundColor: 'rgba(0,0,0,0.7)',
-  borderRadius: 20,
-  paddingVertical: 10,
-  paddingHorizontal: 20,
-  elevation: 10,
-},
-toastText: {
-  color: 'white',
-  fontSize: 14,
-},
   fab: {
     position: "absolute",
     bottom: 30,
@@ -326,51 +346,59 @@ toastText: {
     alignItems: "center",
     elevation: 8,
   },
-  addModeBanner: {
-    position: 'absolute',
-    bottom: 0,
-    width: '100%',
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    padding: 15,
-    alignItems: 'center',
+  toggle3DBtn: {
+    position: "absolute",
+    bottom: 30,
+    left: 30,
+    backgroundColor: Colors.background,
+    padding: 10,
+    borderRadius: 30,
+    elevation: 5,
   },
-  addModeText: { color: 'white', fontWeight: 'bold' },
-  centeredView: {
-    flex: 1,
+  overlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: 'rgba(0,0,0,0.5)',
   },
-  modalView: {
-    margin: 20,
-    backgroundColor: "white",
-    borderRadius: 20,
-    padding: 35,
+  overlayContent: {
+    position: "absolute",
+    top: 100,
+    left: 20,
+    right: 20,
     alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    elevation: 5,
-    width: '90%',
   },
-  modalText: { marginBottom: 15, textAlign: "center", fontSize: 20, fontWeight: 'bold' },
-  input: {
-    width: '100%',
-    backgroundColor: '#F0F2F5',
-    padding: 15,
-    borderRadius: 10,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    marginBottom: 15,
+  
+  overlayText: { fontSize: 18, color: Colors.background, textAlign: "center", marginBottom: 20 },
+  cancelButton: { backgroundColor: Colors.primaryRed, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
+  cancelButtonText: { color: Colors.background, fontSize: 16, fontWeight: "bold" },
+  modalContainer: { flex: 1, backgroundColor: Colors.background },
+  closeButton: { position: "absolute", top: 20, right: 20, zIndex: 1 },
+  modalContent: { paddingHorizontal: 20, paddingTop: 60, paddingBottom: 40 },
+  modalTitle: { fontSize: 22, fontWeight: "bold", color: Colors.darkText, marginBottom: 5 },
+  modalDateTime: { fontSize: 14, color: Colors.subtleText, marginBottom: 15 },
+  modalDescription: { fontSize: 16, color: Colors.darkText, lineHeight: 24, marginBottom: 20 },
+  modalInfoBox: { backgroundColor: "#F0F2F5", padding: 15, borderRadius: 10, marginBottom: 10 },
+  modalLabel: { fontSize: 14, fontWeight: "600", color: Colors.subtleText, marginBottom: 3 },
+  modalText: { fontSize: 16, color: Colors.darkText },
+  deleteButton: { backgroundColor: Colors.primaryRed, padding: 15, borderRadius: 8, alignItems: "center", marginTop: 20 },
+  deleteButtonText: { color: Colors.background, fontSize: 16, fontWeight: "bold" },
+  markerWrapper: { alignItems: "center" },
+  markerLabel: {
+    fontSize: 12,
+    fontWeight: "bold",
+    color: Colors.darkText,
+    backgroundColor: "white",
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginBottom: 2,
   },
-  textArea: { height: 100, textAlignVertical: 'top' },
-  buttonRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
-  button: { borderRadius: 10, padding: 10, elevation: 2, flex: 0.48, alignItems: 'center' },
-  buttonClose: { backgroundColor: '#6C757D' },
-  buttonSave: { backgroundColor: Colors.primaryRed },
-  textStyle: { color: "white", fontWeight: "bold", textAlign: "center" },
+  eventImage: { width: 250, height: 150, borderRadius: 10, marginBottom: 10, backgroundColor: Colors.border },
 });
 
 export default MapScreen;
