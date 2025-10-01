@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { collection, doc, getDoc, getDocs, onSnapshot, query, Timestamp, where } from "firebase/firestore";
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, Timestamp, where } from "firebase/firestore";
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -47,6 +47,7 @@ export default function YourEventsScreen() {
   const [userRole, setUserRole] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (isLoading || !user) return;
@@ -152,7 +153,34 @@ export default function YourEventsScreen() {
     };
 
     fetchUserRoleAndEvents();
-  }, [user, isLoading]);
+  }, [user, isLoading, refreshKey]);
+
+  // New function to handle cancel registration
+  const handleCancelRegistration = async () => {
+    if (!user || !selectedEvent) return;
+
+    try {
+      // Query registeredEvents collection for the registration document
+      const regQuery = query(
+        collection(db, "registeredEvents"),
+        where("userId", "==", user.uid),
+        where("eventId", "==", selectedEvent.id)
+      );
+
+      const regSnapshot = await getDocs(regQuery);
+
+      if (!regSnapshot.empty) {
+        // Delete the registration document (assuming one per user per event)
+        await deleteDoc(doc(db, "registeredEvents", regSnapshot.docs[0].id));
+
+        // Refresh the events list
+        setRefreshKey(prev => prev + 1);
+        setModalVisible(false);
+      }
+    } catch (error) {
+      console.error("Error cancelling registration:", error);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -166,6 +194,9 @@ export default function YourEventsScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.headerContainer}>
         <Text style={styles.headerTitle}>Your Events</Text>
+        <TouchableOpacity onPress={() => setRefreshKey(prev => prev + 1)} style={styles.reloadButton}>
+          <Icon name="refresh" size={24} color={Colors.darkText} />
+        </TouchableOpacity>
       </View>
       {user ? (
         events.length > 0 ? (
@@ -260,6 +291,15 @@ export default function YourEventsScreen() {
                   ))}
                 </View>
               )}
+
+              {userRole === 'student' && (
+                <TouchableOpacity
+                  style={styles.cancelRegistrationButton}
+                  onPress={handleCancelRegistration}
+                >
+                  <Text style={styles.cancelRegistrationButtonText}>Cancel Registration</Text>
+                </TouchableOpacity>
+              )}
             </ScrollView>
           )}
         </View>
@@ -283,11 +323,17 @@ const styles = StyleSheet.create({
     padding: 20,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   headerTitle: {
     fontSize: 28,
     fontWeight: 'bold',
     color: Colors.darkText,
+  },
+  reloadButton: {
+    padding: 5,
   },
   listContent: {
     padding: 20,
@@ -346,4 +392,17 @@ const styles = StyleSheet.create({
   modalInfoBox: { backgroundColor: "#F0F2F5", padding: 15, borderRadius: 10, marginBottom: 10 },
   modalLabel: { fontSize: 14, fontWeight: "600", color: Colors.subtleText, marginBottom: 3 },
   modalText: { fontSize: 16, color: Colors.darkText },
+  cancelRegistrationButton: {
+    backgroundColor: Colors.primaryRed,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginTop: 10,
+  },
+  cancelRegistrationButtonText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+  },
 });

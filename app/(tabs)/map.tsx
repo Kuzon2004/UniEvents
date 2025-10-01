@@ -1,13 +1,17 @@
 import { useRouter } from "expo-router";
 import { signOut } from "firebase/auth";
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
   GeoPoint,
   getDoc,
+  getDocs,
   onSnapshot,
-  Timestamp
+  query,
+  Timestamp,
+  where
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
 import {
@@ -26,7 +30,9 @@ import {
 import MapView, { Marker, PROVIDER_GOOGLE } from "react-native-maps";
 import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
+import { useAuth } from '../../context/AuthContext';
 import { auth, db } from "../../firebaseConfig";
+import { useNotificationScheduler } from '../../hooks/useNotificationScheduler';
 
 const Colors = {
   primaryRed: "#B80000",
@@ -52,15 +58,18 @@ interface Event {
 
 const MapScreen = () => {
   const router = useRouter();
+  const { user, role: userRole } = useAuth();
+  const { scheduleNotification } = useNotificationScheduler();
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
-  const [userRole, setUserRole] = useState<string | null>(null);
 
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [isRegistered, setIsRegistered] = useState(false);
 
   const [selectingLocation, setSelectingLocation] = useState(false);
   const [is3D, setIs3D] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const mapRef = useRef<MapView>(null);
 
   const minLat = 13.006;
@@ -85,24 +94,33 @@ const MapScreen = () => {
       }
     );
 
-    const fetchUserRole = async () => {
-      const user = auth.currentUser;
-      if (user) {
-        const userDoc = await getDoc(doc(db, "users", user.uid));
-        if (userDoc.exists()) setUserRole(userDoc.data().role);
-      }
-    };
-    fetchUserRole();
-
     setLoading(false);
 
     return () => unsubscribe();
-  }, []);
+  }, [refreshKey]);
 
-  const handleMarkerPress = (event: Event) => {
+  const handleMarkerPress = async (event: Event) => {
     if (selectingLocation) return;
     setSelectedEvent(event);
     setModalVisible(true);
+
+    if (!user) {
+      setIsRegistered(false);
+      return;
+    }
+
+    try {
+      const registeredQuery = query(
+        collection(db, "registeredEvents"),
+        where("userId", "==", user.uid),
+        where("eventId", "==", event.id)
+      );
+      const snapshot = await getDocs(registeredQuery);
+      setIsRegistered(!snapshot.empty);
+    } catch (error) {
+      console.error("Error checking registration on marker press:", error);
+      setIsRegistered(false);
+    }
   };
 
   const handleMapPress = (e: any) => {
@@ -149,6 +167,45 @@ const MapScreen = () => {
     );
   };
 
+  const handleRegisterFromMarker = async () => {
+    if (!selectedEvent || !user) return;
+
+    try {
+      // Check if already registered
+      const registeredQuery = query(
+        collection(db, "registeredEvents"),
+        where("userId", "==", user.uid),
+        where("eventId", "==", selectedEvent.id)
+      );
+      const snapshot = await getDocs(registeredQuery);
+      if (!snapshot.empty) {
+        Alert.alert("Info", "You are already registered for this event.");
+        return;
+      }
+
+      // Fetch user details
+      const userDoc = await getDoc(doc(db, "users", user.uid));
+      const userData = userDoc.data();
+
+      await addDoc(collection(db, "registeredEvents"), {
+        userId: user.uid,
+        eventId: selectedEvent.id,
+        registeredAt: Timestamp.now(),
+        name: userData?.displayName || userData?.email || 'Name',
+        email: user?.email || '',
+      });
+
+      Alert.alert("Success", "You have successfully registered for this event!");
+      setModalVisible(false);
+
+      // Schedule notification
+      await scheduleNotification(selectedEvent as any);
+    } catch (error) {
+      console.error("Error registering from marker:", error);
+      Alert.alert("Error", "Failed to register for the event. Please try again.");
+    }
+  };
+
   const toggle3D = () => {
     const newPitch = is3D ? 0 : 45;
     setIs3D(prev => !prev);
@@ -178,50 +235,48 @@ const MapScreen = () => {
 
   return (
     <SafeAreaView style={styles.container}>
-     <MapView
-  ref={mapRef}
-  provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
-  style={styles.map}
-  initialRegion={{
-    latitude: 13.0136,
-    longitude: 80.2345,
-    latitudeDelta: 0.005,
-    longitudeDelta: 0.005,
-  }}
-  minZoomLevel={17.5}
-  onPress={handleMapPress}
-  onRegionChangeComplete={handleRegionChangeComplete}
->
-  {events
-    .filter(event => event.location)
-    .map(event => {
-      let iconName = 'map-marker';
-      let iconColor = Colors.primaryRed;
-      if (event.category === 'Tech') {
-        iconName = 'laptop';
-        iconColor = '#d30000ff';
-      } else if (event.category === 'Food') {
-        iconName = 'food';
-        iconColor = '#dc0000ff';
-      }
-      return (
-        <Marker
-          key={event.id}
-          coordinate={{
-            latitude: event.location!.latitude,
-            longitude: event.location!.longitude,
-          }}
-          anchor={{ x: 0.5, y: 1 }}
-          onPress={() => handleMarkerPress(event)} // opens modal
-        >
-          {/* Marker icon only, no text above */}
-          <Icon name={iconName} size={30} color={iconColor} />
-        </Marker>
-      );
-    })}
-</MapView>
-
-
+      <MapView
+        ref={mapRef}
+        provider={Platform.OS === "android" ? PROVIDER_GOOGLE : undefined}
+        style={styles.map}
+        initialRegion={{
+          latitude: 13.0136,
+          longitude: 80.2345,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
+        }}
+        minZoomLevel={17.5}
+        onPress={handleMapPress}
+        onRegionChangeComplete={handleRegionChangeComplete}
+      >
+        {events
+          .filter(event => event.location)
+          .map(event => {
+            let iconName = 'map-marker';
+            let iconColor = Colors.primaryRed;
+            if (event.category === 'Tech') {
+              iconName = 'laptop';
+              iconColor = '#d30000ff';
+            } else if (event.category === 'Food') {
+              iconName = 'food';
+              iconColor = '#dc0000ff';
+            }
+            return (
+              <Marker
+                key={event.id}
+                coordinate={{
+                  latitude: event.location!.latitude,
+                  longitude: event.location!.longitude,
+                }}
+                anchor={{ x: 0.5, y: 1 }}
+                onPress={() => handleMarkerPress(event)} // opens modal
+              >
+                {/* Marker icon only, no text above */}
+                <Icon name={iconName} size={35} color={iconColor} />
+              </Marker>
+            );
+          })}
+      </MapView>
 
       {selectingLocation && (
         <View style={styles.overlay} pointerEvents="none">
@@ -237,9 +292,14 @@ const MapScreen = () => {
         </View>
       )}
 
-      <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-        <Icon name="logout" size={24} color={Colors.accentNavy} />
-      </TouchableOpacity>
+      <View style={styles.headerRight}>
+        <TouchableOpacity onPress={() => setRefreshKey(prev => prev + 1)} style={styles.reloadButton}>
+          <Icon name="refresh" size={24} color={Colors.accentNavy} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
+          <Icon name="logout" size={24} color={Colors.accentNavy} />
+        </TouchableOpacity>
+      </View>
 
       {userRole === "organizer" && (
         <TouchableOpacity style={styles.fab} onPress={handleFabPress}>
@@ -295,6 +355,21 @@ const MapScreen = () => {
                 <Text style={styles.modalText}>Organizer contact: {selectedEvent.organizerInfo.phoneNumber}</Text>
               </View>
 
+              {userRole === "student" && !isRegistered && (
+                <TouchableOpacity
+                  style={styles.registerButton}
+                  onPress={handleRegisterFromMarker}
+                >
+                  <Text style={styles.registerButtonText}>Register for Event</Text>
+                </TouchableOpacity>
+              )}
+
+              {userRole === "student" && isRegistered && (
+                <View style={styles.registeredContainer}>
+                  <Text style={styles.registeredText}>You are registered for this event</Text>
+                </View>
+              )}
+
               {userRole === "organizer" &&
                 selectedEvent.createdBy === auth.currentUser?.uid && (
                   <TouchableOpacity
@@ -315,25 +390,22 @@ const MapScreen = () => {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   map: { flex: 1 },
-  calloutContainer: {
-  backgroundColor: "white",
-  paddingHorizontal: 6,
-  paddingVertical: 2,
-  borderRadius: 4,
-  borderWidth: 1,
-  borderColor: Colors.primaryRed,
-},
-calloutText: {
-  fontSize: 12,
-  fontWeight: "bold",
-  color: Colors.darkText,
-},
-
   loaderContainer: { flex: 1, justifyContent: "center", alignItems: "center" },
-  logoutButton: {
+  headerRight: {
     position: "absolute",
     top: Platform.OS === "ios" ? 60 : 40,
     right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  reloadButton: {
+    backgroundColor: Colors.background,
+    padding: 10,
+    borderRadius: 30,
+    elevation: 5,
+    marginRight: 10,
+  },
+  logoutButton: {
     backgroundColor: Colors.background,
     padding: 10,
     borderRadius: 30,
@@ -377,7 +449,6 @@ calloutText: {
     right: 20,
     alignItems: "center",
   },
-  
   overlayText: { fontSize: 18, color: Colors.background, textAlign: "center", marginBottom: 20 },
   cancelButton: { backgroundColor: Colors.primaryRed, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 },
   cancelButtonText: { color: Colors.background, fontSize: 16, fontWeight: "bold" },
@@ -390,19 +461,12 @@ calloutText: {
   modalInfoBox: { backgroundColor: "#F0F2F5", padding: 15, borderRadius: 10, marginBottom: 10 },
   modalLabel: { fontSize: 14, fontWeight: "600", color: Colors.subtleText, marginBottom: 3 },
   modalText: { fontSize: 16, color: Colors.darkText },
+  registerButton: { backgroundColor: Colors.primaryRed, padding: 15, borderRadius: 8, alignItems: "center", marginTop: 20 },
+  registerButtonText: { color: Colors.background, fontSize: 16, fontWeight: "bold" },
   deleteButton: { backgroundColor: Colors.primaryRed, padding: 15, borderRadius: 8, alignItems: "center", marginTop: 20 },
   deleteButtonText: { color: Colors.background, fontSize: 16, fontWeight: "bold" },
-  markerWrapper: { alignItems: "center" },
-  markerLabel: {
-    fontSize: 12,
-    fontWeight: "bold",
-    color: Colors.darkText,
-    backgroundColor: "white",
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginBottom: 2,
-  },
+  registeredContainer: { backgroundColor: "#E9F7EF", padding: 15, borderRadius: 8, alignItems: "center", marginTop: 20 },
+  registeredText: { color: "#28A745", fontSize: 16, fontWeight: "bold" },
   eventImage: { width: 250, height: 150, borderRadius: 10, marginBottom: 10, backgroundColor: Colors.border },
 });
 

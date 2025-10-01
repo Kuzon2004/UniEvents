@@ -22,7 +22,9 @@
       "predictiveBackGestureEnabled": false,
       "package": "com.anonymous.UniEvents",
       "googleServicesFile": "./google-services.json",
-      "permissions": ["android.permission.WAKE_LOCK"],
+      "permissions": [
+        "android.permission.WAKE_LOCK"
+      ],
       "config": {
         "googleMaps": {
           "apiKey": "mapkey"
@@ -53,8 +55,9 @@
       "reactCompiler": true
     },
     "extra": {
+      "router": {},
       "eas": {
-        "projectId": "d440fcbc-2c7d-4edc-982b-dc87ccbbd084"
+        "projectId": "ded46a28-e702-4fd1-980f-f46c6faea034"
       }
     }
   }

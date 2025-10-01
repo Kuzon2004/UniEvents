@@ -19,7 +19,7 @@ import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 // --- Import the new Auth hook and Firebase config ---
 import { useAuth } from '../../context/AuthContext';
 import { auth, db } from '../../firebaseConfig';
-import { useNotificationScheduler } from 'D:/Projects/Programs/App-uni/UniEvents/app/hooks/useNotificationScheduler.ts';
+import { useNotificationScheduler } from '../../hooks/useNotificationScheduler';
 
 interface Event {
   id: string;
@@ -50,6 +50,7 @@ export default function HomeScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [isRegistered, setIsRegistered] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   const handleLogout = async () => {
     try {
@@ -87,7 +88,7 @@ export default function HomeScreen() {
     registerForPushNotificationsAsync();
 
     return () => unsubscribe();
-  }, [user, isLoading, registerForPushNotificationsAsync]);
+  }, [user, isLoading, registerForPushNotificationsAsync, refreshKey]);
 
   // Check if user is registered for selected event
   useEffect(() => {
@@ -161,9 +162,14 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.headerContainer}>
         <Text style={styles.headerTitle}>Upcoming Events</Text>
-        <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
-          <Icon name="logout" size={24} color={Colors.darkText} />
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          <TouchableOpacity onPress={() => setRefreshKey(prev => prev + 1)} style={styles.reloadButton}>
+            <Icon name="refresh" size={24} color={Colors.darkText} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
+            <Icon name="logout" size={24} color={Colors.darkText} />
+          </TouchableOpacity>
+        </View>
       </View>
       {user ? (
         // If the user is logged in, render the list of events.
@@ -290,6 +296,14 @@ const styles = StyleSheet.create({
   },
   logoutButton: {
     padding: 5,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  reloadButton: {
+    padding: 5,
+    marginRight: 10,
   },
   listContent: {
     padding: 20,
