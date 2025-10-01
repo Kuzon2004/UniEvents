@@ -6,7 +6,7 @@ import {
   doc,
   GeoPoint,
   getDoc,
-  getDocs,
+  onSnapshot,
   Timestamp
 } from "firebase/firestore";
 import React, { useEffect, useRef, useState } from "react";
@@ -69,29 +69,34 @@ const MapScreen = () => {
   const maxLng = 80.244;
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const eventsCollection = collection(db, "events");
-        const eventSnapshot = await getDocs(eventsCollection);
-        const eventsList = eventSnapshot.docs.map(doc => ({
+    const eventsCollection = collection(db, "events");
+    const unsubscribe = onSnapshot(
+      eventsCollection,
+      (snapshot) => {
+        const eventsList = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
         })) as Event[];
         setEvents(eventsList);
-
-        const user = auth.currentUser;
-        if (user) {
-          const userDoc = await getDoc(doc(db, "users", user.uid));
-          if (userDoc.exists()) setUserRole(userDoc.data().role);
-        }
-      } catch (error) {
+      },
+      (error) => {
         console.error("Failed to fetch data:", error);
         Alert.alert("Error", "Could not load data from the server.");
-      } finally {
-        setLoading(false);
+      }
+    );
+
+    const fetchUserRole = async () => {
+      const user = auth.currentUser;
+      if (user) {
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        if (userDoc.exists()) setUserRole(userDoc.data().role);
       }
     };
-    fetchData();
+    fetchUserRole();
+
+    setLoading(false);
+
+    return () => unsubscribe();
   }, []);
 
   const handleMarkerPress = (event: Event) => {

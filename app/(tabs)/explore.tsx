@@ -1,112 +1,349 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useRouter } from 'expo-router';
+import { collection, doc, getDoc, getDocs, onSnapshot, query, Timestamp, where } from "firebase/firestore";
+import React, { useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  FlatList,
+  Image,
+  Modal,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import Icon from "react-native-vector-icons/MaterialCommunityIcons";
 
-import { Collapsible } from '@/components/ui/collapsible';
-import { ExternalLink } from '@/components/external-link';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Fonts } from '@/constants/theme';
+// --- Import the new Auth hook and Firebase config ---
+import { useAuth } from '../../context/AuthContext';
+import { db } from '../../firebaseConfig';
 
-export default function TabTwoScreen() {
+interface Event {
+  id: string;
+  eventName: string;
+  description: string;
+  category: string;
+  dateTime?: Timestamp;
+  venueDetails: { building: string; floor: string; room: string };
+  organizerInfo: { name: string; phoneNumber: string };
+  imageUrls: string[];
+  createdBy?: string;
+  registeredStudents?: { userId: string; name: string; email?: string }[];
+}
+
+const Colors = {
+  primaryRed: "#B80000",
+  darkText: "#212529",
+  subtleText: '#6C757D',
+  border: '#DEE2E6',
+  background: "#FFFFFF",
+};
+
+export default function YourEventsScreen() {
+  const { user, isLoading } = useAuth();
+  const router = useRouter();
+  const [events, setEvents] = useState<Event[]>([]);
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
+  const [modalVisible, setModalVisible] = useState(false);
+
+  useEffect(() => {
+    if (isLoading || !user) return;
+
+    const fetchUserRoleAndEvents = async () => {
+      try {
+        // Get user role
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+        const role = userDoc.exists() ? userDoc.data().role : null;
+        setUserRole(role);
+
+        if (role === 'organizer') {
+          // For organizers: fetch events they created
+          const eventsQuery = query(
+            collection(db, "events"),
+            where("createdBy", "==", user.uid)
+          );
+
+          const unsubscribe = onSnapshot(eventsQuery, async (snapshot) => {
+            const eventsList = await Promise.all(
+              snapshot.docs.map(async (eventDoc) => {
+                const eventData = eventDoc.data() as Event;
+                const eventId = eventDoc.id;
+
+                // Get registered students for this event
+                const registeredQuery = query(
+                  collection(db, "registeredEvents"),
+                  where("eventId", "==", eventId)
+                );
+                const registeredSnapshot = await getDocs(registeredQuery);
+
+                // Fetch student details
+                const studentPromises = registeredSnapshot.docs.map(async (regDoc) => {
+                  const regData = regDoc.data();
+                  // Fetch user email from users collection if not in registeredEvents
+                  const userDoc = await getDoc(doc(db, "users", regData.userId));
+                  const userData = userDoc.data();
+                  return {
+                    userId: regData.userId,
+                    name: regData.name || 'Unknown',
+                    email: regData.email || userData?.email || '',
+                  };
+                });
+
+                const registeredStudents = await Promise.all(studentPromises);
+
+                return {
+                  ...eventData,
+                  id: eventId,
+                  registeredStudents,
+                } as Event;
+              })
+            );
+
+            setEvents(eventsList.sort((a, b) => {
+              if (!a.dateTime) return 1;
+              if (!b.dateTime) return -1;
+              return a.dateTime.toMillis() - b.dateTime.toMillis();
+            }));
+          });
+
+          return () => unsubscribe();
+        } else if (role === 'student') {
+          // For students: fetch events they registered for
+          const registeredQuery = query(
+            collection(db, "registeredEvents"),
+            where("userId", "==", user.uid)
+          );
+
+          const unsubscribe = onSnapshot(registeredQuery, async (snapshot) => {
+            const registeredEventIds = snapshot.docs.map(doc => doc.data().eventId);
+
+            if (registeredEventIds.length === 0) {
+              setEvents([]);
+              return;
+            }
+
+            // Fetch the actual event details
+            const eventsPromises = registeredEventIds.map(eventId =>
+              getDoc(doc(db, "events", eventId))
+            );
+
+            const eventsSnapshots = await Promise.all(eventsPromises);
+            const eventsList = eventsSnapshots
+              .filter(snapshot => snapshot.exists())
+              .map(snapshot => ({
+                id: snapshot.id,
+                ...snapshot.data(),
+              })) as Event[];
+
+            setEvents(eventsList.sort((a, b) => {
+              if (!a.dateTime) return 1;
+              if (!b.dateTime) return -1;
+              return a.dateTime.toMillis() - b.dateTime.toMillis();
+            }));
+          });
+
+          return () => unsubscribe();
+        }
+      } catch (error) {
+        console.error("Error fetching events:", error);
+      }
+    };
+
+    fetchUserRoleAndEvents();
+  }, [user, isLoading]);
+
+  if (isLoading) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color={Colors.primaryRed} />
+      </View>
+    );
+  }
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#D0D0D0', dark: '#353636' }}
-      headerImage={
-        <IconSymbol
-          size={310}
-          color="#808080"
-          name="chevron.left.forwardslash.chevron.right"
-          style={styles.headerImage}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText
-          type="title"
-          style={{
-            fontFamily: Fonts.rounded,
-          }}>
-          Explore
-        </ThemedText>
-      </ThemedView>
-      <ThemedText>This app includes example code to help you get started.</ThemedText>
-      <Collapsible title="File-based routing">
-        <ThemedText>
-          This app has two screens:{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">app/(tabs)/explore.tsx</ThemedText>
-        </ThemedText>
-        <ThemedText>
-          The layout file in <ThemedText type="defaultSemiBold">app/(tabs)/_layout.tsx</ThemedText>{' '}
-          sets up the tab navigator.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/router/introduction">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Android, iOS, and web support">
-        <ThemedText>
-          You can open this project on Android, iOS, and the web. To open the web version, press{' '}
-          <ThemedText type="defaultSemiBold">w</ThemedText> in the terminal running this project.
-        </ThemedText>
-      </Collapsible>
-      <Collapsible title="Images">
-        <ThemedText>
-          For static images, you can use the <ThemedText type="defaultSemiBold">@2x</ThemedText> and{' '}
-          <ThemedText type="defaultSemiBold">@3x</ThemedText> suffixes to provide files for
-          different screen densities
-        </ThemedText>
-        <Image
-          source={require('@/assets/images/react-logo.png')}
-          style={{ width: 100, height: 100, alignSelf: 'center' }}
-        />
-        <ExternalLink href="https://reactnative.dev/docs/images">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Light and dark mode components">
-        <ThemedText>
-          This template has light and dark mode support. The{' '}
-          <ThemedText type="defaultSemiBold">useColorScheme()</ThemedText> hook lets you inspect
-          what the user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-        </ThemedText>
-        <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-          <ThemedText type="link">Learn more</ThemedText>
-        </ExternalLink>
-      </Collapsible>
-      <Collapsible title="Animations">
-        <ThemedText>
-          This template includes an example of an animated component. The{' '}
-          <ThemedText type="defaultSemiBold">components/HelloWave.tsx</ThemedText> component uses
-          the powerful{' '}
-          <ThemedText type="defaultSemiBold" style={{ fontFamily: Fonts.mono }}>
-            react-native-reanimated
-          </ThemedText>{' '}
-          library to create a waving hand animation.
-        </ThemedText>
-        {Platform.select({
-          ios: (
-            <ThemedText>
-              The <ThemedText type="defaultSemiBold">components/ParallaxScrollView.tsx</ThemedText>{' '}
-              component provides a parallax effect for the header image.
-            </ThemedText>
-          ),
-        })}
-      </Collapsible>
-    </ParallaxScrollView>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.headerContainer}>
+        <Text style={styles.headerTitle}>Your Events</Text>
+      </View>
+      {user ? (
+        events.length > 0 ? (
+          <FlatList
+            data={events}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity style={styles.eventCard} onPress={() => { setSelectedEvent(item); setModalVisible(true); }}>
+                <Text style={styles.eventTitle}>{item.eventName}</Text>
+                {item.description && <Text style={styles.eventDescription}>{item.description}</Text>}
+                <Text style={styles.eventCategory}>{item.category}</Text>
+                {userRole === 'organizer' && item.registeredStudents && (
+                  <Text style={styles.registrationCount}>
+                    {item.registeredStudents.length} registered student{item.registeredStudents.length !== 1 ? 's' : ''}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            )}
+            contentContainerStyle={styles.listContent}
+          />
+        ) : (
+          <View style={styles.centered}>
+            <Text style={styles.noEventsText}>
+              {userRole === 'organizer'
+                ? "You haven't created any events yet."
+                : "You haven't registered for any events yet."}
+            </Text>
+            <Text style={styles.noEventsSubtext}>
+              {userRole === 'organizer'
+                ? "Go to Create Event to add your first event."
+                : "Go to Home tab to explore and register for events."}
+            </Text>
+          </View>
+        )
+      ) : (
+        <View style={styles.centered}>
+          <Text>Please log in to see your events.</Text>
+        </View>
+      )}
+
+      <Modal
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <View style={styles.modalContainer}>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setModalVisible(false)}
+          >
+            <Icon name="close" size={24} color={Colors.darkText} />
+          </TouchableOpacity>
+          {selectedEvent && (
+            <ScrollView contentContainerStyle={styles.modalContent}>
+              <Text style={styles.modalTitle}>{selectedEvent.eventName}</Text>
+              <Text style={styles.modalDateTime}>
+                {selectedEvent.dateTime
+                  ? selectedEvent.dateTime.toDate().toLocaleString()
+                  : "Date not specified"}
+              </Text>
+
+              {selectedEvent.imageUrls?.map((url, idx) => (
+                <Image
+                  key={`${selectedEvent.id}-${idx}`}
+                  source={{ uri: url }}
+                  style={styles.eventImage}
+                />
+              ))}
+
+              <Text style={styles.modalDescription}>{selectedEvent.description}</Text>
+
+              <View style={styles.modalInfoBox}>
+                <Text style={styles.modalLabel}>Venue</Text>
+                <Text style={styles.modalText}>Building: {selectedEvent.venueDetails.building}</Text>
+                <Text style={styles.modalText}>Floor: {selectedEvent.venueDetails.floor}</Text>
+                <Text style={styles.modalText}>Room number: {selectedEvent.venueDetails.room}</Text>
+              </View>
+              <View style={styles.modalInfoBox}>
+                <Text style={styles.modalLabel}>Organizer</Text>
+                <Text style={styles.modalText}>Organizer name: {selectedEvent.organizerInfo.name}</Text>
+                <Text style={styles.modalText}>Organizer contact: {selectedEvent.organizerInfo.phoneNumber}</Text>
+              </View>
+
+              {userRole === 'organizer' && selectedEvent.registeredStudents && selectedEvent.registeredStudents.length > 0 && (
+                <View style={styles.modalInfoBox}>
+                  <Text style={styles.modalLabel}>Registered Students ({selectedEvent.registeredStudents.length})</Text>
+                  {selectedEvent.registeredStudents.map((student, index) => (
+                    <Text key={student.userId} style={styles.modalText}>
+                      {index + 1}. {student.email}
+                    </Text>
+                  ))}
+                </View>
+              )}
+            </ScrollView>
+          )}
+        </View>
+      </Modal>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  headerImage: {
-    color: '#808080',
-    bottom: -90,
-    left: -35,
-    position: 'absolute',
+  container: {
+    flex: 1,
+    backgroundColor: '#F8F9FA',
   },
-  titleContainer: {
-    flexDirection: 'row',
-    gap: 8,
+  centered: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
   },
+  headerContainer: {
+    padding: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: Colors.darkText,
+  },
+  listContent: {
+    padding: 20,
+  },
+  eventCard: {
+    backgroundColor: 'white',
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 15,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2, },
+    shadowOpacity: 0.1,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  eventTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: Colors.primaryRed,
+    marginBottom: 5,
+  },
+  eventDescription: {
+    fontSize: 14,
+    color: Colors.subtleText,
+    marginBottom: 5,
+  },
+  eventCategory: {
+    fontSize: 12,
+    color: Colors.subtleText,
+    fontStyle: 'italic',
+  },
+  registrationCount: {
+    fontSize: 14,
+    color: Colors.primaryRed,
+    fontWeight: '500',
+    marginTop: 5,
+  },
+  noEventsText: {
+    fontSize: 18,
+    color: Colors.darkText,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  noEventsSubtext: {
+    fontSize: 14,
+    color: Colors.subtleText,
+    textAlign: 'center',
+  },
+  modalContainer: { flex: 1, backgroundColor: Colors.background },
+  closeButton: { position: "absolute", top: 20, right: 20, zIndex: 1 },
+  modalContent: { paddingHorizontal: 20, paddingTop: 60, paddingBottom: 40 },
+  modalTitle: { fontSize: 22, fontWeight: "bold", color: Colors.darkText, marginBottom: 5 },
+  modalDateTime: { fontSize: 14, color: Colors.subtleText, marginBottom: 15 },
+  eventImage: { width: 250, height: 150, borderRadius: 10, marginBottom: 10, backgroundColor: Colors.border },
+  modalDescription: { fontSize: 16, color: Colors.darkText, lineHeight: 24, marginBottom: 20 },
+  modalInfoBox: { backgroundColor: "#F0F2F5", padding: 15, borderRadius: 10, marginBottom: 10 },
+  modalLabel: { fontSize: 14, fontWeight: "600", color: Colors.subtleText, marginBottom: 3 },
+  modalText: { fontSize: 16, color: Colors.darkText },
 });

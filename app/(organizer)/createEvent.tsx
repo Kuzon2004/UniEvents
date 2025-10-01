@@ -1,7 +1,7 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   Image,
@@ -16,7 +16,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // --- Firebase ---
-import { addDoc, collection, GeoPoint, Timestamp } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, GeoPoint, getDoc, Timestamp, updateDoc } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { auth, db, storage } from '../../firebaseConfig';
 
@@ -32,6 +32,8 @@ const Colors = {
 const CreateEventScreen = () => {
   const router = useRouter();
   const params = useLocalSearchParams();
+  const eventId = params.eventId as string | undefined;
+  const isEditing = !!eventId;
   const lat = params.lat ? parseFloat(params.lat as string) : undefined;
   const lng = params.lng ? parseFloat(params.lng as string) : undefined;
 
@@ -46,6 +48,31 @@ const CreateEventScreen = () => {
   const [date, setDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
+
+  // Load event data if editing
+  useEffect(() => {
+    if (isEditing && eventId) {
+      const loadEvent = async () => {
+        try {
+          const eventDoc = await getDoc(doc(db, 'events', eventId));
+          if (eventDoc.exists()) {
+            const eventData = eventDoc.data();
+            setEventName(eventData.eventName || '');
+            setDescription(eventData.description || '');
+            setVenue(eventData.venueDetails || { building: '', floor: '', room: '' });
+            setOrganizer(eventData.organizerInfo || { name: '', phoneNumber: '' });
+            setCategory(eventData.category || 'NonTech');
+            setImageUrls(eventData.imageUrls || []);
+            setDate(eventData.dateTime?.toDate() || new Date());
+          }
+        } catch (error) {
+          console.error('Error loading event:', error);
+          Alert.alert('Error', 'Could not load event data.');
+        }
+      };
+      loadEvent();
+    }
+  }, [isEditing, eventId]);
 
   // --- Date & Time ---
   const onDateChange = (event: any, selectedDate?: Date) => {
@@ -138,37 +165,77 @@ const CreateEventScreen = () => {
 
   // --- Save Event ---
   const handleSaveEvent = async () => {
-    if (!eventName || !description || !lat || !lng) {
+    if (!eventName || !description || (!isEditing && (!lat || !lng))) {
       Alert.alert('Missing Info', 'Fill all required fields and select a location.');
       return;
     }
 
     try {
-      await addDoc(collection(db, 'events'), {
-        eventName,
-        description,
-        category,
-        dateTime: Timestamp.fromDate(date),
-        venueDetails: venue,
-        organizerInfo: organizer,
-        imageUrls,
-        location: new GeoPoint(lat, lng),
-        createdBy: auth.currentUser?.uid,
-        createdAt: Timestamp.now(),
-      });
-
-      Alert.alert('Event Created', 'Your event has been successfully created.');
+      if (isEditing && eventId) {
+        await updateDoc(doc(db, 'events', eventId), {
+          eventName,
+          description,
+          category,
+          dateTime: Timestamp.fromDate(date),
+          venueDetails: venue,
+          organizerInfo: organizer,
+          imageUrls,
+          ...(lat && lng && { location: new GeoPoint(lat, lng) }),
+        });
+        Alert.alert('Event Updated', 'Your event has been successfully updated.');
+      } else {
+        await addDoc(collection(db, 'events'), {
+          eventName,
+          description,
+          category,
+          dateTime: Timestamp.fromDate(date),
+          venueDetails: venue,
+          organizerInfo: organizer,
+          imageUrls,
+          location: new GeoPoint(lat!, lng!),
+          createdBy: auth.currentUser?.uid,
+          createdAt: Timestamp.now(),
+        });
+        Alert.alert('Event Created', 'Your event has been successfully created.');
+      }
       router.back();
     } catch (error) {
       console.error('Error saving event:', error);
-      Alert.alert('Error', 'Could not create event.');
+      Alert.alert('Error', `Could not ${isEditing ? 'update' : 'create'} event.`);
     }
+  };
+
+  // --- Delete Event ---
+  const handleDeleteEvent = async () => {
+    if (!isEditing || !eventId) return;
+
+    Alert.alert(
+      'Delete Event',
+      'Are you sure you want to delete this event? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteDoc(doc(db, 'events', eventId));
+              Alert.alert('Event Deleted', 'The event has been successfully deleted.');
+              router.back();
+            } catch (error) {
+              console.error('Error deleting event:', error);
+              Alert.alert('Error', 'Could not delete event.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Create New Event</Text>
+        <Text style={styles.title}>{isEditing ? 'Edit Event' : 'Create New Event'}</Text>
 
         <TextInput style={styles.input} placeholder="Event Name" value={eventName} onChangeText={setEventName} />
         <TextInput style={styles.input} placeholder="Description" value={description} onChangeText={setDescription} multiline />
@@ -221,9 +288,17 @@ const CreateEventScreen = () => {
           <Text style={styles.buttonText}>{isUploading ? 'Uploading...' : 'Choose from Gallery'}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity onPress={handleSaveEvent} style={[styles.button, styles.saveButton]}>
-          <Text style={styles.buttonText}>Save Event</Text>
+        <TouchableOpacity onPress={() => router.back()} style={[styles.button, styles.cancelButton]}>
+          <Text style={styles.buttonText}>Cancel</Text>
         </TouchableOpacity>
+        <TouchableOpacity onPress={handleSaveEvent} style={[styles.button, styles.saveButton]}>
+          <Text style={styles.buttonText}>{isEditing ? 'Update Event' : 'Save Event'}</Text>
+        </TouchableOpacity>
+        {isEditing && (
+          <TouchableOpacity onPress={handleDeleteEvent} style={[styles.button, styles.deleteButton]}>
+            <Text style={styles.buttonText}>Delete Event</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
     </SafeAreaView>
   );
@@ -260,6 +335,8 @@ const styles = StyleSheet.create({
   },
   buttonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   saveButton: { backgroundColor: Colors.primaryRed, marginTop: 10 },
+  cancelButton: { backgroundColor: '#6c757d', marginTop: 10, marginRight: 10 },
+  deleteButton: { backgroundColor: '#dc3545', marginTop: 10 },
   imageContainer: { flexDirection: 'row', flexWrap: 'wrap' },
   thumbnail: { width: 100, height: 100, borderRadius: 8, margin: 5 },
   categoryContainer: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 10 },
